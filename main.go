@@ -100,6 +100,17 @@ func (b *Book) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
+func (b *BookLoan) BeforeCreate(tx *gorm.DB) error {
+	if b.DueDate.Sub(b.LoanDate) > 30*24*time.Hour {
+		return errors.New("loan duration cannot exceed 30 days")
+	}
+	book := Book{}
+	if err := tx.Model(&Book{}).Where("id = ? AND available > 0", b.BookID).First(&book).Error; err != nil {
+		return fmt.Errorf("book not found or not available: %w", err)
+	}
+	return tx.Model(&book).Update("available", gorm.Expr("available - 1")).Error
+}
+
 // AddBook creates a new book record in the database.
 // Returns an error if the operation fails.
 func (s *BookService) AddBook(book *Book) error {
