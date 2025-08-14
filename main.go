@@ -40,6 +40,7 @@ type Book struct {
 	Title           string    `gorm:"size:200;not null"`
 	PublicationYear int       `gorm:"type:smallint"`
 	Copies          int       `gorm:"default:0"`
+	Available       int       `gorm:"default:0"`
 	CreatedAt       time.Time `gorm:"autoCreateTime"`
 	PublisherID     uint
 	Publisher       Publisher
