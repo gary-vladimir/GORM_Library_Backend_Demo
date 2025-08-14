@@ -42,6 +42,7 @@ type Book struct {
 	Copies          int       `gorm:"default:0"`
 	Available       int       `gorm:"default:0"`
 	CreatedAt       time.Time `gorm:"autoCreateTime"`
+	LastModified    time.Time `gorm:"autoUpdateTime"`
 	PublisherID     uint
 	Publisher       Publisher
 	Authors         []Author    `gorm:"many2many:book_authors;"`
@@ -94,6 +95,10 @@ func (b *Book) BeforeCreate(tx *gorm.DB) error {
     return nil
 }
 
+func (b *Book) BeforeSave(tx *gorm.DB) error {
+	b.LastModified = time.Now()
+	return nil
+}
 
 // AddBook creates a new book record in the database.
 // Returns an error if the operation fails.
