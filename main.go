@@ -15,6 +15,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+type AuditLog struct {
+    ID        uint
+    Action    string
+    ModelType string
+    ModelID   uint
+    Details   string
+    CreatedAt time.Time
+}
+
 // Author represents a book author with biographical information.
 type Author struct {
 	ID        uint   `gorm:"primaryKey"`
@@ -36,6 +45,16 @@ type Book struct {
 	Publisher       Publisher
 	Authors         []Author    `gorm:"many2many:book_authors;"`
 	Categories      []Category  `gorm:"many2many:book_categories;"`
+}
+
+// BookLoan represents a book checkout record
+type BookLoan struct {
+    ID       uint      `gorm:"primaryKey"`
+    BookID   uint
+    Book     Book
+    LoanDate time.Time
+    DueDate  time.Time
+    Returned bool
 }
 
 // BookService handles business logic for book-related operations.
