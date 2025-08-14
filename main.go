@@ -86,6 +86,15 @@ type Review struct {
 	ProductID  uint
 }
 
+func (b *Book) BeforeCreate(tx *gorm.DB) error {
+	if len(b.ISBN) != 13 {
+		return fmt.Errorf("ISBN must be exactly 13 characters")
+	}
+	b.Available = b.Copies
+    return nil
+}
+
+
 // AddBook creates a new book record in the database.
 // Returns an error if the operation fails.
 func (s *BookService) AddBook(book *Book) error {
