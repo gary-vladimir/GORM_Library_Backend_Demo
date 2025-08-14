@@ -23,8 +23,8 @@ A robust library management system built with Go and GORM, featuring PostgreSQL 
 1. **Clone the repository**:
 
    ```bash
-   git clone <repository-url>
-   cd go-fundamentals/GORM
+   git clone https://github.com/gary-vladimir/GORM_Library_Backend_Demo.git
+   cd GORM_Library_Backend_Demo/
    ```
 
 2. **Install dependencies**:
