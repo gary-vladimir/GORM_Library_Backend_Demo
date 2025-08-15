@@ -111,6 +111,17 @@ func (b *BookLoan) BeforeCreate(tx *gorm.DB) error {
 	return tx.Model(&book).Update("available", gorm.Expr("available - 1")).Error
 }
 
+func (b *BookLoan) AfterUpdate(tx *gorm.DB) error {
+	if b.Returned {
+		book := Book{}
+		if err := tx.Model(&Book{}).Where("id = ?", b.BookID).First(&book).Error; err != nil {
+			return fmt.Errorf("book not found: %w", err)
+		}
+		return tx.Model(&book).Update("available", gorm.Expr("available + 1")).Error
+	}
+	return nil
+}
+
 // AddBook creates a new book record in the database.
 // Returns an error if the operation fails.
 func (s *BookService) AddBook(book *Book) error {
