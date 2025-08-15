@@ -49,7 +49,7 @@ func newTestDB(t *testing.T) (*gorm.DB, func()) {
 		t.Fatalf("failed to connect to postgres test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&Review{}, &Book{}, &Author{}, &Publisher{}, &Category{}); err != nil {
+	if err := db.AutoMigrate(&Review{}, &Book{}, &Author{}, &Publisher{}, &Category{}, &BookLoan{}); err != nil {
 		t.Fatalf("failed to automigrate: %v", err)
 	}
 
@@ -139,10 +139,10 @@ func TestFindBook_Found(t *testing.T) {
 	defer cleanup()
 	svc := &BookService{db: db}
 
-	want := &Book{ISBN: "9781111111111", Title: "Found Me", Copies: 2}
+	want := &Book{ISBN: "9788888888888", Title: "Found Me", Copies: 2}
 	mustCreateBook(t, db, want)
 
-	got, err := svc.FindBook("9781111111111")
+	got, err := svc.FindBook("9788888888888")
 	if err != nil {
 		t.Fatalf("FindBook returned error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestModel_Relationships_AuthorPublisherCategory(t *testing.T) {
 	}
 
 	book := Book{
-		ISBN:        "9784444444444",
+		ISBN:        "9780000000002",
 		Title:       "Go Deep Dive",
 		Copies:      7,
 		PublisherID: pub.ID,
@@ -237,7 +237,7 @@ func TestModel_Relationships_AuthorPublisherCategory(t *testing.T) {
 	if err := db.Preload("Publisher").
 		Preload("Authors").
 		Preload("Categories").
-		First(&fetched, "isbn = ?", "9784444444444").Error; err != nil {
+		First(&fetched, "isbn = ?", "9780000000002").Error; err != nil {
 		t.Fatalf("fetch with preloads: %v", err)
 	}
 
@@ -259,8 +259,8 @@ func TestModel_UniqueISBNConstraint(t *testing.T) {
 
 	pubID := ensurePublisher(t, db)
 
-	b1 := Book{ISBN: "9785555555555", Title: "One", PublisherID: pubID}
-	b2 := Book{ISBN: "9785555555555", Title: "Two (dup)", PublisherID: pubID}
+	b1 := Book{ISBN: "9780000000003", Title: "One", PublisherID: pubID}
+	b2 := Book{ISBN: "9780000000003", Title: "Two (dup)", PublisherID: pubID}
 
 	if err := db.Create(&b1).Error; err != nil {
 		t.Fatalf("create first book failed: %v", err)
@@ -384,14 +384,14 @@ func TestUpdateBookCopies_Success(t *testing.T) {
 	defer cleanup()
 	svc := &BookService{db: db}
 
-	mustCreateBook(t, db, &Book{ISBN: "9783333333333", Title: "Inventory", Copies: 5})
+	mustCreateBook(t, db, &Book{ISBN: "9789999999999", Title: "Inventory", Copies: 5})
 
-	if err := svc.UpdateBookCopies("9783333333333", 15); err != nil {
+	if err := svc.UpdateBookCopies("9789999999999", 15); err != nil {
 		t.Fatalf("UpdateBookCopies returned error: %v", err)
 	}
 
 	var got Book
-	if err := db.First(&got, "isbn = ?", "9783333333333").Error; err != nil {
+	if err := db.First(&got, "isbn = ?", "9789999999999").Error; err != nil {
 		t.Fatalf("failed to refetch book: %v", err)
 	}
 	if got.Copies != 15 {
@@ -399,10 +399,314 @@ func TestUpdateBookCopies_Success(t *testing.T) {
 	}
 
 	// Edge cases: zero and large value
-	if err := svc.UpdateBookCopies("9783333333333", 0); err != nil {
+	if err := svc.UpdateBookCopies("9789999999999", 0); err != nil {
 		t.Fatalf("update to zero copies failed: %v", err)
 	}
-	if err := svc.UpdateBookCopies("9783333333333", 1000000); err != nil {
+	if err := svc.UpdateBookCopies("9789999999999", 1000000); err != nil {
 		t.Fatalf("update to large copies failed: %v", err)
+	}
+}
+
+// --- Tests for Book and BookLoan hooks ---
+
+// TestBook_BeforeCreate_ISBNValidation tests that Book.BeforeCreate validates ISBN length.
+func TestBook_BeforeCreate_ISBNValidation(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	pubID := ensurePublisher(t, db)
+
+	// Test valid ISBN (13 characters)
+	validBook := &Book{
+		ISBN:        "9781111111111",
+		Title:       "Valid Book",
+		PublisherID: pubID,
+	}
+	if err := db.Create(validBook).Error; err != nil {
+		t.Fatalf("valid ISBN should succeed: %v", err)
+	}
+
+	// Test invalid ISBN (12 characters)
+	invalidBook := &Book{
+		ISBN:        "978111111111",
+		Title:       "Invalid Book",
+		PublisherID: pubID,
+	}
+	if err := db.Create(invalidBook).Error; err == nil {
+		t.Fatalf("invalid ISBN should fail")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "isbn must be exactly 13 characters") {
+		t.Errorf("unexpected error for invalid ISBN: %v", err)
+	}
+
+	// Test invalid ISBN (14 characters)
+	invalidBook2 := &Book{
+		ISBN:        "97811111111111",
+		Title:       "Invalid Book 2",
+		PublisherID: pubID,
+	}
+	if err := db.Create(invalidBook2).Error; err == nil {
+		t.Fatalf("invalid ISBN should fail")
+	}
+}
+
+// TestBook_BeforeCreate_AvailableCopies tests that Book.BeforeCreate sets Available = Copies.
+func TestBook_BeforeCreate_AvailableCopies(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	pubID := ensurePublisher(t, db)
+
+	book := &Book{
+		ISBN:        "9782222222222",
+		Title:       "Test Book",
+		Copies:      5,
+		Available:   0, // Should be overridden by hook
+		PublisherID: pubID,
+	}
+
+	if err := db.Create(book).Error; err != nil {
+		t.Fatalf("failed to create book: %v", err)
+	}
+
+	// Verify Available was set to Copies by the hook
+	if book.Available != 5 {
+		t.Errorf("Available should be set to Copies by hook, got %d want 5", book.Available)
+	}
+
+	// Verify in database
+	var fetched Book
+	if err := db.First(&fetched, book.ID).Error; err != nil {
+		t.Fatalf("failed to fetch book: %v", err)
+	}
+	if fetched.Available != 5 {
+		t.Errorf("Available in database should be 5, got %d", fetched.Available)
+	}
+}
+
+// TestBook_BeforeSave_LastModified tests that Book.BeforeSave updates LastModified timestamp.
+func TestBook_BeforeSave_LastModified(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	pubID := ensurePublisher(t, db)
+
+	book := &Book{
+		ISBN:        "9783333333333",
+		Title:       "Test Book",
+		PublisherID: pubID,
+	}
+
+	if err := db.Create(book).Error; err != nil {
+		t.Fatalf("failed to create book: %v", err)
+	}
+
+	originalModified := book.LastModified
+
+	// Wait a bit to ensure timestamp difference
+	time.Sleep(10 * time.Millisecond)
+
+	// Update the book
+	if err := db.Model(book).Update("Title", "Updated Title").Error; err != nil {
+		t.Fatalf("failed to update book: %v", err)
+	}
+
+	// Verify LastModified was updated
+	if book.LastModified.Equal(originalModified) {
+		t.Errorf("LastModified should have been updated, got %v want different from %v", book.LastModified, originalModified)
+	}
+
+	// Verify in database
+	var fetched Book
+	if err := db.First(&fetched, book.ID).Error; err != nil {
+		t.Fatalf("failed to fetch book: %v", err)
+	}
+	if fetched.LastModified.Equal(originalModified) {
+		t.Errorf("LastModified in database should have been updated, got %v want different from %v", fetched.LastModified, originalModified)
+	}
+}
+
+// TestBookLoan_BeforeCreate_DurationValidation tests that BookLoan.BeforeCreate validates loan duration.
+func TestBookLoan_BeforeCreate_DurationValidation(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	// Create a book first
+	pubID := ensurePublisher(t, db)
+	book := &Book{
+		ISBN:        "9784444444444",
+		Title:       "Test Book",
+		Copies:      3,
+		Available:   3,
+		PublisherID: pubID,
+	}
+	if err := db.Create(book).Error; err != nil {
+		t.Fatalf("failed to create book: %v", err)
+	}
+
+	// Test valid loan duration (30 days)
+	validLoan := &BookLoan{
+		BookID:   book.ID,
+		LoanDate: time.Now(),
+		DueDate:  time.Now().Add(30 * 24 * time.Hour),
+	}
+	if err := db.Create(validLoan).Error; err != nil {
+		t.Fatalf("valid loan duration should succeed: %v", err)
+	}
+
+	// Test invalid loan duration (31 days)
+	invalidLoan := &BookLoan{
+		BookID:   book.ID,
+		LoanDate: time.Now(),
+		DueDate:  time.Now().Add(31 * 24 * time.Hour),
+	}
+	if err := db.Create(invalidLoan).Error; err == nil {
+		t.Fatalf("invalid loan duration should fail")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "loan duration cannot exceed 30 days") {
+		t.Errorf("unexpected error for invalid loan duration: %v", err)
+	}
+}
+
+// TestBookLoan_BeforeCreate_BookAvailability tests that BookLoan.BeforeCreate checks book availability.
+func TestBookLoan_BeforeCreate_BookAvailability(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	// Create a book with 1 copy
+	pubID := ensurePublisher(t, db)
+	book := &Book{
+		ISBN:        "9785555555555",
+		Title:       "Test Book",
+		Copies:      1,
+		Available:   1,
+		PublisherID: pubID,
+	}
+	if err := db.Create(book).Error; err != nil {
+		t.Fatalf("failed to create book: %v", err)
+	}
+
+	// First loan should succeed
+	loan1 := &BookLoan{
+		BookID:   book.ID,
+		LoanDate: time.Now(),
+		DueDate:  time.Now().Add(7 * 24 * time.Hour),
+	}
+	if err := db.Create(loan1).Error; err != nil {
+		t.Fatalf("first loan should succeed: %v", err)
+	}
+
+	// Verify available copies were decremented
+	var updatedBook Book
+	if err := db.First(&updatedBook, book.ID).Error; err != nil {
+		t.Fatalf("failed to fetch updated book: %v", err)
+	}
+	if updatedBook.Available != 0 {
+		t.Errorf("Available copies should be decremented to 0, got %d", updatedBook.Available)
+	}
+
+	// Second loan should fail (no available copies)
+	loan2 := &BookLoan{
+		BookID:   book.ID,
+		LoanDate: time.Now(),
+		DueDate:  time.Now().Add(7 * 24 * time.Hour),
+	}
+	if err := db.Create(loan2).Error; err == nil {
+		t.Fatalf("second loan should fail due to no available copies")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "book not found or not available") {
+		t.Errorf("unexpected error for unavailable book: %v", err)
+	}
+}
+
+// TestBookLoan_AfterUpdate_ReturnBook tests that BookLoan.AfterUpdate increments available copies when returned.
+func TestBookLoan_AfterUpdate_ReturnBook(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	// Create a book with 1 copy
+	pubID := ensurePublisher(t, db)
+	book := &Book{
+		ISBN:        "9780000000004",
+		Title:       "Test Book",
+		Copies:      1,
+		Available:   1,
+		PublisherID: pubID,
+	}
+	if err := db.Create(book).Error; err != nil {
+		t.Fatalf("failed to create book: %v", err)
+	}
+
+	// Create a loan
+	loan := &BookLoan{
+		BookID:   book.ID,
+		LoanDate: time.Now(),
+		DueDate:  time.Now().Add(7 * 24 * time.Hour),
+	}
+	if err := db.Create(loan).Error; err != nil {
+		t.Fatalf("failed to create loan: %v", err)
+	}
+
+	// Verify available copies were decremented
+	var updatedBook Book
+	if err := db.First(&updatedBook, book.ID).Error; err != nil {
+		t.Fatalf("failed to fetch updated book: %v", err)
+	}
+	if updatedBook.Available != 0 {
+		t.Errorf("Available copies should be 0 after loan, got %d", updatedBook.Available)
+	}
+
+	// Return the book
+	if err := db.Model(loan).Update("Returned", true).Error; err != nil {
+		t.Fatalf("failed to update loan as returned: %v", err)
+	}
+
+	// Verify available copies were incremented
+	var returnedBook Book
+	if err := db.First(&returnedBook, book.ID).Error; err != nil {
+		t.Fatalf("failed to fetch book after return: %v", err)
+	}
+	if returnedBook.Available != 1 {
+		t.Errorf("Available copies should be incremented to 1 after return, got %d", returnedBook.Available)
+	}
+}
+
+// TestBookLoan_AfterUpdate_NoChange tests that BookLoan.AfterUpdate doesn't change available copies for non-return updates.
+func TestBookLoan_AfterUpdate_NoChange(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+
+	// Create a book with 1 copy
+	pubID := ensurePublisher(t, db)
+	book := &Book{
+		ISBN:        "9787777777777",
+		Title:       "Test Book",
+		Copies:      1,
+		Available:   1,
+		PublisherID: pubID,
+	}
+	if err := db.Create(book).Error; err != nil {
+		t.Fatalf("failed to create book: %v", err)
+	}
+
+	// Create a loan
+	loan := &BookLoan{
+		BookID:   book.ID,
+		LoanDate: time.Now(),
+		DueDate:  time.Now().Add(7 * 24 * time.Hour),
+	}
+	if err := db.Create(loan).Error; err != nil {
+		t.Fatalf("failed to create loan: %v", err)
+	}
+
+	// Update something other than Returned field
+	if err := db.Model(loan).Update("DueDate", time.Now().Add(14*24*time.Hour)).Error; err != nil {
+		t.Fatalf("failed to update loan due date: %v", err)
+	}
+
+	// Verify available copies remain unchanged (still 0 from the loan)
+	var updatedBook Book
+	if err := db.First(&updatedBook, book.ID).Error; err != nil {
+		t.Fatalf("failed to fetch updated book: %v", err)
+	}
+	if updatedBook.Available != 0 {
+		t.Errorf("Available copies should remain 0 after non-return update, got %d", updatedBook.Available)
 	}
 }

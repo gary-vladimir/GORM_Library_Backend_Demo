@@ -15,6 +15,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+type AuditLog struct {
+    ID        uint
+    Action    string
+    ModelType string
+    ModelID   uint
+    Details   string
+    CreatedAt time.Time
+}
+
 // Author represents a book author with biographical information.
 type Author struct {
 	ID        uint   `gorm:"primaryKey"`
@@ -31,11 +40,23 @@ type Book struct {
 	Title           string    `gorm:"size:200;not null"`
 	PublicationYear int       `gorm:"type:smallint"`
 	Copies          int       `gorm:"default:0"`
+	Available       int       `gorm:"default:0"`
 	CreatedAt       time.Time `gorm:"autoCreateTime"`
+	LastModified    time.Time `gorm:"autoUpdateTime"`
 	PublisherID     uint
 	Publisher       Publisher
 	Authors         []Author    `gorm:"many2many:book_authors;"`
 	Categories      []Category  `gorm:"many2many:book_categories;"`
+}
+
+// BookLoan represents a book checkout record
+type BookLoan struct {
+    ID       uint      `gorm:"primaryKey"`
+    BookID   uint
+    Book     Book
+    LoanDate time.Time
+    DueDate  time.Time
+    Returned bool
 }
 
 // BookService handles business logic for book-related operations.
@@ -64,6 +85,41 @@ type Review struct {
 	Comment    string
 	CustomerID uint
 	ProductID  uint
+}
+
+func (b *Book) BeforeCreate(tx *gorm.DB) error {
+	if len(b.ISBN) != 13 {
+		return fmt.Errorf("ISBN must be exactly 13 characters")
+	}
+	b.Available = b.Copies
+    return nil
+}
+
+func (b *Book) BeforeSave(tx *gorm.DB) error {
+	b.LastModified = time.Now()
+	return nil
+}
+
+func (b *BookLoan) BeforeCreate(tx *gorm.DB) error {
+	if b.DueDate.Sub(b.LoanDate) > 30*24*time.Hour {
+		return errors.New("loan duration cannot exceed 30 days")
+	}
+	book := Book{}
+	if err := tx.Model(&Book{}).Where("id = ? AND available > 0", b.BookID).First(&book).Error; err != nil {
+		return fmt.Errorf("book not found or not available: %w", err)
+	}
+	return tx.Model(&book).Update("available", gorm.Expr("available - 1")).Error
+}
+
+func (b *BookLoan) AfterUpdate(tx *gorm.DB) error {
+	if b.Returned {
+		book := Book{}
+		if err := tx.Model(&Book{}).Where("id = ?", b.BookID).First(&book).Error; err != nil {
+			return fmt.Errorf("book not found: %w", err)
+		}
+		return tx.Model(&book).Update("available", gorm.Expr("available + 1")).Error
+	}
+	return nil
 }
 
 // AddBook creates a new book record in the database.
